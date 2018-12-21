@@ -366,6 +366,10 @@ def print_annotation():
 
 # Implementation of basic git or git-related commands
 
+def is_executable(path):
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
 def edit():
     return run_cmd(os.environ.get("EDITOR") or "vim", definition_file)
 
@@ -494,12 +498,26 @@ def go(branch):
     run_git("checkout", "--quiet", branch, "--")
 
 
+def rebase(onto, fork_commit, branch):
+    def do_rebase():
+        run_git("rebase", "--interactive", "--onto", onto, fork_commit, branch)
+
+    pre_rebase_hook = git_dir + "/hooks/machete-pre-rebase"
+    if is_executable(pre_rebase_hook):
+        debug("rebase(%s, %s, %s)" % (onto, fork_commit, branch), "running pre-rebase hook " + pre_rebase_hook)
+        status = run_cmd(pre_rebase_hook, onto, fork_commit, branch)
+        if status == 0:
+            do_rebase()
+    else:
+        do_rebase()
+
+
 def update(branch, fork_commit):
-    run_git("rebase", "--interactive", "--onto", "refs/heads/" + up(branch, prompt_if_inferred=True), fork_commit, branch)
+    rebase("refs/heads/" + up(branch, prompt_if_inferred=True), fork_commit, branch)
 
 
 def reapply(branch, fork_commit):
-    run_git("rebase", "--interactive", "--onto", fork_commit, fork_commit, branch)
+    rebase(fork_commit, fork_commit, branch)
 
 
 def diff(branch):
@@ -554,14 +572,12 @@ def reflog(b):
 
 
 def is_relevant_reflog_subject(gs, b):
-    result = not (
+    return not (
         gs.startswith("branch: Created from") or
         gs.startswith("branch: Reset to " + b) or
         gs.startswith("branch: Reset to HEAD") or
         gs.startswith("reset: moving to ")
     )
-    debug("is_relevant_reflog_subject(<<%s>>, %s)" % (gs, b), "result: %s" % result)
-    return result
 
 
 def adjusted_reflog(b, prefix):
@@ -1058,13 +1074,10 @@ def status():
         }
         current += sync_status_string[s]
         status_branch_hook = git_dir + "/hooks/machete-status-branch"
-        if os.path.exists(status_branch_hook):
-            try:
-                status, stdout = popen_cmd(status_branch_hook, b)
-                if status == 0 and not stdout.isspace():
-                    current += "  " + stdout.rstrip()
-            except OSError:
-                pass
+        if is_executable(status_branch_hook):
+            status, stdout = popen_cmd(status_branch_hook, b)
+            if status == 0 and not stdout.isspace():
+                current += "  " + stdout.rstrip()
         print current
 
 
@@ -1504,7 +1517,7 @@ try:
             raise MacheteException("Not a git repository")
 
         definition_file = os.path.join(git_dir, "machete")
-        if cmd not in ("discover", "infer") and not os.path.exists(definition_file):
+        if cmd not in ("discover", "infer") and not os.path.isfile(definition_file):
             open(definition_file, 'w').close()
 
     directions = "d[own]|f[irst]|l[ast]|n[ext]|p[rev]|r[oot]|u[p]"

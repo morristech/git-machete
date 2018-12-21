@@ -10,7 +10,7 @@ dim='\033[2m'
 endc='\033[0m'
 
 echo -ne "$dim[`basename $submod_rel_path` at $endc"
-if [ -n "$refs" ]; then
+if [ -n "$refs" ] && [ "$refs" != HEAD ]; then
     echo -n $refs
 else
     echo -n `git rev-parse --short $submod_commit`
