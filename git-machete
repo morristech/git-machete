@@ -1032,8 +1032,10 @@ def status():
     cb = current_branch_or_none()
 
     for b, pfx in dfs_res:
-        current = bold(b) + ("  " + dim(annotations[b]) if b in annotations else "")
-        current_ul = underline(current) if b == cb else current
+        current = underline(bold(b)) if b == cb else bold(b)
+        if b in annotations:
+            current += "  " + dim(annotations[b])
+
         if b in up_branch:
             print_line_prefix(b, "│ \n")
             if opt_list_commits:
@@ -1054,7 +1056,16 @@ def status():
             AHEAD_OF_REMOTE: RED + " (ahead of %s)" % remote + ENDC,
             DIVERGED_FROM_REMOTE: RED + " (diverged from %s)" % remote + ENDC
         }
-        print current_ul + sync_status_string[s]
+        current += sync_status_string[s]
+        status_branch_hook = git_dir + "/hooks/machete-status-branch"
+        if os.path.exists(status_branch_hook):
+            try:
+                status, stdout = popen_cmd(status_branch_hook, b)
+                if status == 0 and not stdout.isspace():
+                    current += "  " + stdout.rstrip()
+            except OSError:
+                pass
+        print current
 
 
 # Main
