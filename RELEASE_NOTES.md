@@ -1,5 +1,9 @@
 # Release notes
 
+## New in git-machete 2.9.0
+
+- added: handling of `machete-pre-rebase` and `machete-status-branch` hooks + hook samples
+
 ## New in git-machete 2.8.5
 
 - fixed: fork point of a branch could be determined incorrectly when a no-op rebase has been performed on some other branch

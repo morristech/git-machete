@@ -1,21 +1,31 @@
 #!/usr/bin/env bash
 
-submod_rel_path=`git config -l | grep -Po '(?<=submodule\.).*?(?=\.url)' | head -1`
+# machete-status-branch hook is invoked by 'git machete status' for each managed branch (and branch name is passed as a parameter).
+# Stdout of the hook is displayed at the end of line after custom annotation and remote sync-ness status.
+
+# This particular example prints the revision at which the project's submodule is checked out.
+# TODO: Only the first submodule (as defined in .gitmodules) is taken into account, that's not good for projects with more than one submodule.
+
+# Extract submodule path from git config.
+[ -f .gitmodules ] || exit 0
+submod_rel_path=$(git config --file .gitmodules --get-regexp '\.path$' | head -1 | awk '{ print $2 }')
 [ -n "$submod_rel_path" ] || exit 0
 
+# See what submodule commit is recorded in the branch passed as parameter.
 branch=$1
-submod_commit=`git ls-tree -d "$branch" -- $submod_rel_path | grep -Po '(?<=160000 commit ).*(?=\t)'`
-[ -n "submod_commit" ] || exit 0
+submod_commit=`git ls-tree -d "$branch" -- "$submod_rel_path" | grep -Po '(?<=160000 commit ).*(?=\t)'`
+[ -n "$submod_commit" ] || exit 0
 
-refs=`git --work-tree=$submod_rel_path --git-dir=.git/modules/$submod_rel_path log --no-walk --format=%D --decorate --decorate-refs-exclude=refs/remotes/ $submod_commit`
+# Check which submodule's local branches (and/or submodule's HEAD) point at submod_commit.
+refs=$(git --git-dir=.git/modules/$submod_rel_path log --no-walk --format=%D --decorate --decorate-refs-exclude=refs/remotes/ $submod_commit)
 
 dim='\033[2m'
 endc='\033[0m'
-
 echo -ne "$dim[`basename $submod_rel_path` at $endc"
 if [ -n "$refs" ] && [ "$refs" != HEAD ]; then
     echo -n $refs
 else
+    # In case no refs (or just HEAD) point to submod_commit, let's just print its short SHA.
     echo -n `git rev-parse --short $submod_commit`
 fi
 echo -e "$dim]$endc"

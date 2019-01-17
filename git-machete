@@ -1146,17 +1146,18 @@ def usage(c=None):
         "discover": "Automatically discover tree of branch dependencies",
         "edit": "Edit the definition file",
         "file": "Print path of the definition file",
-        "fork-point": "Print SHA of the computed fork point commit of a branch",
-        "format": "Print information about the format of the definition file",
+        "fork-point": "Display SHA of the computed fork point commit of a branch",
+        "format": "Display docs for the format of the definition file",
         "go": "Check out the branch relative to the position of the current branch, accepts down/first/last/next/root/prev/up argument",
         "help": "Print this overview, or print detailed help for a specified command",
+        "hooks": "Display docs for the extra hooks added by git machete",
         "list": "List all branches that fall into one of pre-defined categories (mostly for internal use)",
         "log": "Log the part of history specific to the given branch",
         "reapply": "Rebase the current branch onto its computed fork point",
-        "show": "Print name(s) of the branch(es) relative to the position of the current branch, accepts down/first/last/next/root/prev/up argument",
+        "show": "Display name(s) of the branch(es) relative to the position of the current branch, accepts down/first/last/next/root/prev/up argument",
         "slide-out": "Slide the current branch out and rebase its downstream (child) branch onto its upstream (parent) branch",
-        "status": "Print formatted tree of branch dependencies, including info on their sync with upstream branch and with remote",
-        "traverse": "Walk through the tree of branch dependencies and ask to rebase and/or push branches, one by one",
+        "status": "Display formatted tree of branch dependencies, including info on their sync with upstream branch and with remote",
+        "traverse": "Walk through the tree of branch dependencies and ask to rebase, slide out, push and/or pull branches, one by one",
         "update": "Rebase the current branch onto its upstream (parent) branch"
     }
     long_docs = {
@@ -1294,6 +1295,15 @@ def usage(c=None):
             Usage: git machete help [<command>]
 
             Prints a summary of this tool, or a detailed info on a command if defined.
+        """,
+        "hooks": """
+            .git/hooks/machete-status-branch <branch-name>
+                TODO
+
+            .git/hooks/machete-pre-rebase <new-base> <fork-point-hash> <branch-being-rebased>
+                TODO
+
+            Note: that's not a standalone command, just a help topic (there is no 'git machete hooks') command.
         """,
         "list": """
             Usage: git machete list <category>
@@ -1447,7 +1457,7 @@ def usage(c=None):
     }
     inv_aliases = {v: k for k, v in aliases.iteritems()}
     groups = [
-        ("General topics", ["file", "format", "help"]),
+        ("General topics", ["file", "format", "help", "hooks"]),
         ("Build, display and modify the tree of branch dependencies", ["add", "anno", "discover", "edit", "status"]), # 'infer' is skipped from the main docs
         ("List, check out and delete branches", ["delete-unmanaged", "go", "list", "show"]), # 'prune-branches' is skipped from the main docs
         ("Determine changes specific to the given branch", ["diff", "fork-point", "log"]),
