@@ -405,10 +405,10 @@ def get_config_or_none(key):
     if config_cached is None:
         config_cached = {}
         for config_line in non_empty_lines(popen_git("config", "--list")):
-            key_value = config_line.split("=", 1)
-            if len(key_value) == 2:
-                key, value = key_value
-                config_cached[key] = value
+            k_v = config_line.split("=", 1)
+            if len(k_v) == 2:
+                k, v = k_v
+                config_cached[k] = v
     return config_cached.get(key)
 
 
@@ -777,6 +777,10 @@ def discover_tree():
 
 
 def fork_point_and_containing_branch_defs(b):
+    overridden_fp = get_overridden_fork_point(b)
+    if overridden_fp:
+        return overridden_fp, []
+
     try:
         sha, containing_branch_defs = next(match_log_to_adjusted_reflogs(b))
     except StopIteration:
@@ -793,15 +797,21 @@ def fork_point(b):
     return sha
 
 
-def get_fork_point_override(b):
+def get_fork_point_override_data(b):
     to = get_config_or_none("machete.override-fork-point." + b + ".to")
     if not to: return None
 
     while_descendant_of = get_config_or_none("machete.override-fork-point." + b + ".while-descendant-of")
     if not while_descendant_of: return None
+    return to, while_descendant_of
 
+
+def get_overridden_fork_point(b):
+    override_data = get_fork_point_override_data(b)
+    if not override_data: return None
+
+    to, while_descendant_of = override_data
     if not is_ancestor(while_descendant_of, b, earlier_prefix=""): return None
-
     return sha_by_revision(to, prefix = "")
 
 
@@ -1152,19 +1162,17 @@ def status():
     edge_colors_cached = {}
 
     for b, pfx in dfs_res:
+        remote_sync_status[b] = get_remote_sync_status(b)
+
         if b in up_branch:
             u = up_branch[b]
             needs_sync_with_up_branch[b] = not is_ancestor(u, b)
 
             # Force computing all needed fork points and edge colors to avoid later polluting the printed status in case of --verbose mode.
-            overridden_fp_sha = get_fork_point_override(b)
-            if overridden_fp_sha:
-                fp_sha, fp_branches = overridden_fp_sha, []
-            else:
-                try:
-                    fp_sha, fp_branches = fork_point_and_containing_branch_defs(b)
-                except MacheteException:
-                    fp_sha, fp_branches = None, []
+            try:
+                fp_sha, fp_branches = fork_point_and_containing_branch_defs(b)
+            except MacheteException:
+                fp_sha, fp_branches = None, []
             fork_points_cached[b] = (fp_sha, fp_branches)
 
             if needs_sync_with_up_branch[b]:
@@ -1172,7 +1180,7 @@ def status():
                 if opt_list_commits:
                     commits_cached[b] = reversed(commits_between(fp_sha, "refs/heads/" + b)) if fp_sha else []
             else:
-                if overridden_fp_sha or sha_by_revision(u) == fp_sha:
+                if get_overridden_fork_point(b) or sha_by_revision(u) == fp_sha:
                     edge_colors_cached[b] = GREEN
                     if opt_list_commits:
                         commits_cached[b] = reversed(commits_between(fp_sha, "refs/heads/" + b))
@@ -1181,10 +1189,6 @@ def status():
                     if opt_list_commits:
                         commits_cached[b] = reversed(commits_between("refs/heads/" + u, "refs/heads/" + b))
                         short_fork_point_sha[b] = short_sha(fp_sha) if fp_sha else ''
-
-        # Force computing all needed SHAs to avoid later polluting the printed status in case of --verbose mode.
-        sha_by_revision(b)
-        remote_sync_status[b] = get_remote_sync_status(b)
 
     hook_output = {}
     hook_path = get_hook_path("machete-status-branch")
@@ -1215,8 +1219,11 @@ def status():
             if opt_list_commits:
                 for sha, msg in commits_cached[b]:
                     fp_sha, fp_branches = fork_points_cached[b]
-                    fp_branches_formatted = " and ".join(map(lambda (lb, lb_or_rb): lb_or_rb, fp_branches))
-                    fp_suffix = (RED + ' > fork point ???' + ENDC + ' commit ' + short_fork_point_sha[b] + ' found in reflog of ' + fp_branches_formatted) if sha == fp_sha else ''
+                    if sha == fp_sha:
+                        fp_branches_formatted = " and ".join(map(lambda (lb, lb_or_rb): lb_or_rb, fp_branches))
+                        fp_suffix = (RED + ' > fork point ???' + ENDC + ' commit ' + short_fork_point_sha[b] + ' found in reflog of ' + fp_branches_formatted)
+                    else:
+                        fp_suffix = ''
                     print_line_prefix(b, "│ " + ENDC + dim(msg) + fp_suffix + "\n")
             print_line_prefix(b, "└─")
         else:
@@ -1827,7 +1834,7 @@ try:
         elif param == "unmanaged":
             res = excluding(local_branches(), managed_branches)
         elif param == "with-overridden-fork-point":
-            res = filter(get_fork_point_override, local_branches())
+            res = filter(get_fork_point_override_data, local_branches())
         else:
             raise MacheteException("Usage: git machete list " + allowed_values)
         if res:
