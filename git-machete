@@ -416,6 +416,10 @@ def set_config(key, value):
     run_git("config", "--", key, value)
 
 
+def unset_config(key):
+    run_git("config", "--unset", key)
+
+
 remotes_cached = None
 
 
@@ -427,7 +431,8 @@ def remotes():
 
 
 def remote_for_branch(b):
-    return get_config_or_none("branch." + b + ".remote").rstrip()
+    remote = get_config_or_none("branch." + b + ".remote")
+    return remote.rstrip() if remote else remote
 
 
 def short_sha(revision):
@@ -806,6 +811,11 @@ def set_fork_point_override(b, to_revision):
 
     set_config("machete.override-fork-point." + b + ".to", sha_by_revision(to_revision, prefix=""))
     set_config("machete.override-fork-point." + b + ".while-descendant-of", sha_by_revision(b, prefix="refs/heads/"))
+
+
+def unset_fork_point_override(b):
+    unset_config("machete.override-fork-point." + b + ".to")
+    unset_config("machete.override-fork-point." + b + ".while-descendant-of")
 
 
 def delete_unmanaged():
@@ -1404,13 +1414,14 @@ def usage(c=None):
         """,
         "list": """
             Usage: git machete list <category>
-            where <category> is one of: managed, slidable, slidable-after <branch>, unmanaged
+            where <category> is one of: managed, slidable, slidable-after <branch>, unmanaged, with-overridden-fork-point
 
             Lists all branches that fall into one of the specified categories:
             - 'managed': all branches that appear in the definition file,
             - 'slidable': all managed branches that have exactly one upstream and one downstream (i.e. the ones that can be slid out with 'slide-out' subcommand),
             - 'slidable-after <branch>': the downstream branch of the <branch>, if it exists and is the only downstream of <branch> (i.e. the one that can be slid out immediately following <branch>),
-            - 'unmanaged': all local branches that don't appear in the definition file.
+            - 'unmanaged': all local branches that don't appear in the definition file,
+            - 'with-overridden-fork-point': all local branches that have an overridden fork point. 
 
             This command is generally not meant for a day-to-day use, it's mostly needed for the sake of branch name completion in shell.
         """,
@@ -1597,7 +1608,7 @@ def version():
 
 
 def parse_options(in_args, short_opts="", long_opts=[], gnu=True):
-    global cmd, opt_debug, opt_down_fork_point, opt_fork_point, opt_list_commits, opt_onto, opt_override_to, opt_roots, opt_stat, opt_verbose
+    global cmd, opt_debug, opt_down_fork_point, opt_fork_point, opt_list_commits, opt_onto, opt_override_to, opt_roots, opt_stat, opt_unset_override, opt_verbose
 
     fun = getopt.gnu_getopt if gnu else getopt.getopt
     opts, rest = fun(in_args, short_opts + "hv", long_opts + ['debug', 'help', 'verbose', 'version'])
@@ -1622,6 +1633,8 @@ def parse_options(in_args, short_opts="", long_opts=[], gnu=True):
             opt_roots = set(arg.split(","))
         elif opt in ("-s", "--stat"):
             opt_stat = True
+        elif opt == "--unset-override":
+            opt_unset_override = True
         elif opt in ("-v", "--verbose"):
             opt_verbose = True
         elif opt == "--version":
@@ -1669,6 +1682,7 @@ try:
     opt_override_to = None
     opt_roots = set()
     opt_stat = False
+    opt_unset_override = False
     opt_verbose = False
 
     all_args = parse_options(sys.argv[1:], gnu=False)
@@ -1735,12 +1749,15 @@ try:
         # No need to read definition file.
         print definition_file
     elif cmd == "fork-point":
-        param = check_optional_param(parse_options(args, "", ["override-to="]))
+        param = check_optional_param(parse_options(args, "", ["override-to=", "unset-override"]))
         # No need to read definition file.
+        b = param or current_branch()
         if opt_override_to:
-            set_fork_point_override(param or current_branch(), opt_override_to)
+            set_fork_point_override(b, opt_override_to)
+        elif opt_unset_override:
+            unset_fork_point_override(b)
         else:
-            print fork_point(param or current_branch())
+            print fork_point(b)
     elif cmd == "format":
         # No need to read definition file.
         usage("format")
@@ -1760,7 +1777,7 @@ try:
         # No need to read definition file.
         discover_tree()
     elif cmd == "list":
-        allowed_values = "managed|slidable|slidable-after <branch>|unmanaged"
+        allowed_values = "managed|slidable|slidable-after <branch>|unmanaged|with-overridden-fork-point"
         in_args = parse_options(args)
         if not in_args or len(in_args) > 2:
             raise MacheteException("'%s' expects argument(s): %s" % (cmd, allowed_values))
@@ -1768,7 +1785,7 @@ try:
             raise MacheteException("Argument to '%s' cannot be empty; expected %s" % (cmd, allowed_values))
         elif in_args[0][0] == "-":
             raise MacheteException("option '%s' not recognized" % in_args[0])
-        elif in_args[0] in ("managed", "slidable", "unmanaged") and len(in_args) == 2:
+        elif in_args[0] in ("managed", "slidable", "unmanaged", "with-overridden-fork-point") and len(in_args) == 2:
             raise MacheteException("'%s %s' doesn't expect an extra argument" % (cmd, in_args[0]))
         elif in_args[0] == "slidable-after" and len(in_args) == 1:
             raise MacheteException("'%s %s' requires an extra <branch> argument" % (cmd, in_args[0]))
@@ -1785,9 +1802,12 @@ try:
             res = slidable_after(b)
         elif param == "unmanaged":
             res = excluding(local_branches(), managed_branches)
+        elif param == "with-overridden-fork-point":
+            res = filter(get_fork_point_override, local_branches())
         else:
             raise MacheteException("Usage: git machete list " + allowed_values)
-        print "\n".join(res),
+        if res:
+            print "\n".join(res),
     elif cmd in ("l", "log"):
         param = check_optional_param(parse_options(args))
         # No need to read definition file.
