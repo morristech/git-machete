@@ -397,14 +397,19 @@ def get_git_dir():
     return git_dir
 
 
-config_cached = {}
+config_cached = None
 
 
-def get_config(key):
+def get_config_or_none(key):
     global config_cached
-    if key not in config_cached:
-        config_cached[key] = popen_git("config", "--", key, allow_non_zero=True).rstrip()
-    return config_cached[key]
+    if config_cached is None:
+        config_cached = {}
+        for config_line in non_empty_lines(popen_git("config", "--list")):
+            key_value = config_line.split("=", 1)
+            if len(key_value) == 2:
+                key, value = key_value
+                config_cached[key] = value
+    return config_cached.get(key)
 
 
 def set_config(key, value):
@@ -422,10 +427,7 @@ def remotes():
 
 
 def remote_for_branch(b):
-    try:
-        return popen_git("config", "branch." + b + ".remote").rstrip()
-    except MacheteException:
-        return None
+    return get_config_or_none("branch." + b + ".remote").rstrip()
 
 
 def short_sha(revision):
@@ -536,14 +538,14 @@ def go(branch):
 
 
 def get_hook_path(hook_name):
-    return (get_config("core.hooksPath") or (get_git_dir() + "/hooks")) + "/" + hook_name
+    return (get_config_or_none("core.hooksPath") or (get_git_dir() + "/hooks")) + "/" + hook_name
 
 
 def check_hook_executable(hook_path):
     if not os.path.exists(hook_path):
         return False
     elif not is_executable(hook_path):
-        advice_ignored_hook = get_config("advice.ignoredHook")
+        advice_ignored_hook = get_config_or_none("advice.ignoredHook")
         if advice_ignored_hook != 'false':  # both empty and "true" is okay
             # The [33m color must be used to keep consistent with how git colors this advice for its built-in hooks.
             print >> sys.stderr, YELLOW + "hint: The '%s' hook was ignored because it's not set as executable." % hook_path + ENDC
@@ -787,17 +789,21 @@ def fork_point(b):
 
 
 def get_fork_point_override(b):
-    to = get_config("machete.override-fork-point." + b + ".to")
+    to = get_config_or_none("machete.override-fork-point." + b + ".to")
     if not to: return None
 
-    while_descendant_of = get_config("machete.override-fork-point." + b + ".while-descendant-of")
+    while_descendant_of = get_config_or_none("machete.override-fork-point." + b + ".while-descendant-of")
     if not while_descendant_of: return None
 
     if not is_ancestor(while_descendant_of, b, earlier_prefix=""): return None
-    return sha_by_revision(to)
+
+    return sha_by_revision(to, prefix = "")
 
 
 def set_fork_point_override(b, to_revision):
+    if not is_ancestor(to_revision, b, earlier_prefix=""):
+        raise MacheteException("Cannot override fork point: '%s' is not an ancestor of '%s'" % (to_revision, b))
+
     set_config("machete.override-fork-point." + b + ".to", sha_by_revision(to_revision, prefix=""))
     set_config("machete.override-fork-point." + b + ".while-descendant-of", sha_by_revision(b, prefix="refs/heads/"))
 
@@ -1131,11 +1137,15 @@ def status():
             u = up_branch[b]
             needs_sync_with_up_branch[b] = not is_ancestor(u, b)
 
-            # Force computing all needed fork points to avoid later polluting the printed status in case of --verbose mode.
-            try:
-                fp_sha, fp_branches = fork_point_and_containing_branch_defs(b)
-            except MacheteException:
-                fp_sha, fp_branches = None
+            # Force computing all needed fork points and edge colors to avoid later polluting the printed status in case of --verbose mode.
+            overridden_fp_sha = get_fork_point_override(b)
+            if overridden_fp_sha:
+                fp_sha, fp_branches = overridden_fp_sha, []
+            else:
+                try:
+                    fp_sha, fp_branches = fork_point_and_containing_branch_defs(b)
+                except MacheteException:
+                    fp_sha, fp_branches = None, []
             fork_points_cached[b] = (fp_sha, fp_branches)
 
             if needs_sync_with_up_branch[b]:
@@ -1143,14 +1153,15 @@ def status():
                 if opt_list_commits:
                     commits_cached[b] = reversed(commits_between(fp_sha, "refs/heads/" + b)) if fp_sha else []
             else:
-                if sha_by_revision(u) == fp_sha:
+                if overridden_fp_sha or sha_by_revision(u) == fp_sha:
                     edge_colors_cached[b] = GREEN
+                    if opt_list_commits:
+                        commits_cached[b] = reversed(commits_between(fp_sha, "refs/heads/" + b))
                 else:
                     edge_colors_cached[b] = YELLOW
                     if opt_list_commits:
-                        short_fork_point_sha[b] = short_sha(fp_sha)
-                if opt_list_commits:
-                    commits_cached[b] = reversed(commits_between("refs/heads/" + u, "refs/heads/" + b))
+                        commits_cached[b] = reversed(commits_between("refs/heads/" + u, "refs/heads/" + b))
+                        short_fork_point_sha[b] = short_sha(fp_sha) if fp_sha else ''
 
         # Force computing all needed SHAs to avoid later polluting the printed status in case of --verbose mode.
         sha_by_revision(b)
@@ -1605,7 +1616,7 @@ def parse_options(in_args, short_opts="", long_opts=[], gnu=True):
             opt_list_commits = True
         elif opt in ("-o", "--onto"):
             opt_onto = arg
-        elif opt in ("-O", "--override-to"):
+        elif opt == "--override-to":
             opt_override_to = arg
         elif opt in ("-r", "--root"):
             opt_roots = set(arg.split(","))
@@ -1724,7 +1735,7 @@ try:
         # No need to read definition file.
         print definition_file
     elif cmd == "fork-point":
-        param = check_optional_param(parse_options(args, "O:", ["override-to="]))
+        param = check_optional_param(parse_options(args, "", ["override-to="]))
         # No need to read definition file.
         if opt_override_to:
             set_fork_point_override(param or current_branch(), opt_override_to)

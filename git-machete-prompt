@@ -10,7 +10,7 @@ _git_machete() {
 	add_opts="-o --onto="
 	diff_opts="-s --stat"
 	discover_opts="-l --list-commits -r --root="
-	fork_point_opts="-O --override-to="
+	fork_point_opts="--override-to="
 	infer_opts="-l --list-commits"
 	reapply_opts="-f --fork-point="
 	slide_out_opts="-d --down-fork-point="
@@ -42,7 +42,7 @@ _git_machete() {
              else
                 prev="${COMP_WORDS[COMP_CWORD-1]}"
                 case "$prev" in
-                    -d|--down-fork-point|-f|--fork-point|-O|--override-to) __gitcomp "$(__git_refs)" ;;
+                    -d|--down-fork-point|-f|--fork-point|--override-to) __gitcomp "$(__git_refs)" ;;
                     # We don't complete --help since it's going to be captured by git anyway (and result in redirection to yet non-existent man for `git-machete`).
                     -h) __gitcomp "$help_topics" ;;
                     -o|--onto) __gitcomp_nl "$(git machete list managed)" ;;
