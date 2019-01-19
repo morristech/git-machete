@@ -424,6 +424,10 @@ def remote_for_branch(b):
         return None
 
 
+def short_sha(revision):
+    return popen_git("rev-parse", "--short", revision).rstrip()
+
+
 def compute_sha_by_revision(revision):
     try:
         return popen_git("rev-parse", "--verify", "--quiet", revision).rstrip()
@@ -579,7 +583,7 @@ def log(branch):
 
 
 def commits_between(earlier, later):
-    return non_empty_lines(popen_git("log", "--format=%s", "^" + earlier, later, "--"))
+    return map(lambda x: x.split(":", 1), non_empty_lines(popen_git("log", "--format=%H:%s", "^" + earlier, later, "--")))
 
 
 NO_REMOTES = 0
@@ -761,7 +765,7 @@ def discover_tree():
         edit()
 
 
-def fork_point(b):
+def fork_point_and_containing_branch_defs(b):
     try:
         sha, containing_branch_defs = next(match_log_to_adjusted_reflogs(b))
     except StopIteration:
@@ -770,6 +774,11 @@ def fork_point(b):
     debug("fork_point(%s)" % b,
           "commit %s is the most recent point in history of %s to occur on adjusted reflog of any other branch or its remote counterpart (specifically: %s)\n" %
           (sha, b, " and ".join(map(lambda (lb, lb_or_rb): lb_or_rb, containing_branch_defs))))
+    return sha, containing_branch_defs
+
+
+def fork_point(b):
+    sha, containing_branch_defs = fork_point_and_containing_branch_defs(b)
     return sha
 
 
@@ -1094,17 +1103,35 @@ def status():
     remote_sync_status = {}
     commits_cached = {}
     fork_points_cached = {}
+    short_fork_point_sha = {}
+    edge_colors_cached = {}
 
     for b, pfx in dfs_res:
         if b in up_branch:
-            needs_sync_with_up_branch[b] = not is_ancestor(up_branch[b], b)
+            u = up_branch[b]
+            needs_sync_with_up_branch[b] = not is_ancestor(u, b)
+
             # Force computing all needed fork points to avoid later polluting the printed status in case of --verbose mode.
             try:
-                fork_points_cached[b] = fork_point(b)
+                fp_sha, fp_branches = fork_point_and_containing_branch_defs(b)
             except MacheteException:
-                fork_points_cached[b] = None
-            if opt_list_commits:
-                commits_cached[b] = reversed(commits_between(fork_points_cached[b], "refs/heads/" + b)) if fork_points_cached[b] else []
+                fp_sha, fp_branches = None
+            fork_points_cached[b] = (fp_sha, fp_branches)
+
+            if needs_sync_with_up_branch[b]:
+                edge_colors_cached[b] = RED
+                if opt_list_commits:
+                    commits_cached[b] = reversed(commits_between(fp_sha, "refs/heads/" + b)) if fp_sha else []
+            else:
+                if sha_by_revision(u) == fp_sha:
+                    edge_colors_cached[b] = GREEN
+                else:
+                    edge_colors_cached[b] = YELLOW
+                    if opt_list_commits:
+                        short_fork_point_sha[b] = short_sha(fp_sha)
+                if opt_list_commits:
+                    commits_cached[b] = reversed(commits_between("refs/heads/" + u, "refs/heads/" + b))
+
         # Force computing all needed SHAs to avoid later polluting the printed status in case of --verbose mode.
         sha_by_revision(b)
         remote_sync_status[b] = get_remote_sync_status(b)
@@ -1118,17 +1145,14 @@ def status():
             if status == 0 and not stdout.isspace():
                 hook_output[b] = "  " + stdout.rstrip()
 
-    def edge_color(b):
-        return RED if needs_sync_with_up_branch[b] else (GREEN if sha_by_revision(up_branch[b]) == fork_points_cached[b] else YELLOW)
-
     def print_line_prefix(b, suffix):
         sys.stdout.write("  ")
         for p in pfx[:-1]:
             if not p:
                 sys.stdout.write("  ")
             else:
-                sys.stdout.write(edge_color(p) + "│ " + ENDC)
-        sys.stdout.write(edge_color(b) + suffix + ENDC)
+                sys.stdout.write(edge_colors_cached[p] + "│ " + ENDC)
+        sys.stdout.write(edge_colors_cached[b] + suffix + ENDC)
 
     cb = current_branch_or_none()
 
@@ -1139,8 +1163,11 @@ def status():
         if b in up_branch:
             print_line_prefix(b, "│ \n")
             if opt_list_commits:
-                for msg in commits_cached[b]:
-                    print_line_prefix(b, "│ " + ENDC + DIM + msg + "\n")
+                for sha, msg in commits_cached[b]:
+                    fp_sha, fp_branches = fork_points_cached[b]
+                    fp_branches_formatted = " and ".join(map(lambda (lb, lb_or_rb): lb_or_rb, fp_branches))
+                    fp_suffix = (RED + ' > fork point ???' + ENDC + ' commit ' + short_fork_point_sha[b] + ' found in reflog of ' + fp_branches_formatted) if sha == fp_sha else ''
+                    print_line_prefix(b, "│ " + ENDC + dim(msg) + fp_suffix + "\n")
             print_line_prefix(b, "└─")
         else:
             if b != dfs_res[0][0]:
