@@ -407,6 +407,10 @@ def get_config(key):
     return config_cached[key]
 
 
+def set_config(key, value):
+    run_git("config", "--", key, value)
+
+
 remotes_cached = None
 
 
@@ -438,9 +442,9 @@ def compute_sha_by_revision(revision):
 sha_by_revision_cached = {}
 
 
-def sha_by_revision(revision, prefix ="refs/heads"):
+def sha_by_revision(revision, prefix ="refs/heads/"):
     global sha_by_revision_cached
-    full_revision = prefix + "/" + revision
+    full_revision = prefix + revision
     if full_revision not in sha_by_revision_cached:
         sha_by_revision_cached[full_revision] = compute_sha_by_revision(full_revision)
     return sha_by_revision_cached[full_revision]
@@ -479,8 +483,8 @@ def current_branch():
         raise MacheteException("Not currently on any branch")
 
 
-def is_ancestor(earlier, later, earlier_prefix = "refs/heads", later_prefix = "refs/heads"):
-    return run_git("merge-base", "--is-ancestor", earlier_prefix + "/" + earlier, later_prefix + "/" + later, allow_non_zero=True) == 0
+def is_ancestor(earlier, later, earlier_prefix = "refs/heads/", later_prefix = "refs/heads/"):
+    return run_git("merge-base", "--is-ancestor", earlier_prefix + earlier, later_prefix  + later, allow_non_zero=True) == 0
 
 
 def create_branch(b, out_of):
@@ -596,8 +600,8 @@ DIVERGED_FROM_REMOTE = 6
 
 
 def get_relation_to_remote_counterpart(b, rb):
-    b_is_anc_of_rb = is_ancestor(b, rb, later_prefix="refs/remotes")
-    rb_is_anc_of_b = is_ancestor(rb, b, earlier_prefix="refs/remotes")
+    b_is_anc_of_rb = is_ancestor(b, rb, later_prefix="refs/remotes/")
+    rb_is_anc_of_b = is_ancestor(rb, b, earlier_prefix="refs/remotes/")
     if b_is_anc_of_rb:
         return IN_SYNC_WITH_REMOTE if rb_is_anc_of_b else BEHIND_REMOTE
     else:
@@ -637,7 +641,7 @@ def adjusted_reflog(b, prefix):
             debug("adjusted_reflog(%s, %s) -> is_relevant_reflog_subject(%s, <<<%s>>>)" % (b, prefix, sha, gs), "skipping reflog entry")
         return result
 
-    result = [sha for (sha, gs) in reflog(prefix + "/" + b) if is_relevant_reflog_subject(sha, gs)]
+    result = [sha for (sha, gs) in reflog(prefix + b) if is_relevant_reflog_subject(sha, gs)]
     debug("adjusted_reflog(%s, %s)" % (b, prefix), "computed adjusted reflog (= reflog without branch creation and branch reset events irrelevant for fork point/upstream inference): %s\n" %
           (", ".join(result) or "<empty>"))
     return result
@@ -656,12 +660,12 @@ def match_log_to_adjusted_reflogs(b):
         def generate_entries():
             for lb in local_branches():
                 lb_shas = set()
-                for sha in adjusted_reflog(lb, "refs/heads"):
+                for sha in adjusted_reflog(lb, "refs/heads/"):
                     lb_shas.add(sha)
                     yield sha, (lb, lb)
                 rb = remote_tracking_branch(lb)
                 if rb:
-                    for sha in adjusted_reflog(rb, "refs/remotes"):
+                    for sha in adjusted_reflog(rb, "refs/remotes/"):
                         if sha not in lb_shas:
                             yield sha, (lb, rb)
 
@@ -782,6 +786,22 @@ def fork_point(b):
     return sha
 
 
+def get_fork_point_override(b):
+    to = get_config("machete.override-fork-point." + b + ".to")
+    if not to: return None
+
+    while_descendant_of = get_config("machete.override-fork-point." + b + ".while-descendant-of")
+    if not while_descendant_of: return None
+
+    if not is_ancestor(while_descendant_of, b, earlier_prefix=""): return None
+    return sha_by_revision(to)
+
+
+def set_fork_point_override(b, to_revision):
+    set_config("machete.override-fork-point." + b + ".to", sha_by_revision(to_revision, prefix=""))
+    set_config("machete.override-fork-point." + b + ".while-descendant-of", sha_by_revision(b, prefix="refs/heads/"))
+
+
 def delete_unmanaged():
     branches_to_delete = excluding(local_branches(), managed_branches)
     cb = current_branch_or_none()
@@ -794,7 +814,7 @@ def delete_unmanaged():
         branches_to_delete_merged_to_head = [b for b in branches_to_delete if b in branches_merged_to_head]
         for b in branches_to_delete_merged_to_head:
             rb = remote_tracking_branch(b)
-            is_merged_to_remote = is_ancestor(b, rb, later_prefix="refs/remotes") if rb else True
+            is_merged_to_remote = is_ancestor(b, rb, later_prefix="refs/remotes/") if rb else True
             msg = "Delete branch %s (merged to HEAD%s)? [y/N/q] " % (
                 bold(b), "" if is_merged_to_remote else (", but not merged to " + rb)
             )
@@ -987,7 +1007,7 @@ def traverse():
                     can_pick_other_remote = len(rems) > 1
                     other_remote_suffix = "/o[ther remote]" if can_pick_other_remote else ""
                     rb = new_remote + "/" + b
-                    if not sha_by_revision(rb, prefix="refs/remotes"):
+                    if not sha_by_revision(rb, prefix="refs/remotes/"):
                         ans = raw_input("Push untracked branch %s to %s? (y/N/q/yq%s) " % (bold(b), bold(new_remote), other_remote_suffix)).lower()
                         if ans in ('y', 'yes', 'yq'):
                             run_git("push", "--set-upstream", new_remote, b)
@@ -1566,7 +1586,7 @@ def version():
 
 
 def parse_options(in_args, short_opts="", long_opts=[], gnu=True):
-    global cmd, opt_debug, opt_down_fork_point, opt_fork_point, opt_list_commits, opt_onto, opt_roots, opt_stat, opt_verbose
+    global cmd, opt_debug, opt_down_fork_point, opt_fork_point, opt_list_commits, opt_onto, opt_override_to, opt_roots, opt_stat, opt_verbose
 
     fun = getopt.gnu_getopt if gnu else getopt.getopt
     opts, rest = fun(in_args, short_opts + "hv", long_opts + ['debug', 'help', 'verbose', 'version'])
@@ -1585,6 +1605,8 @@ def parse_options(in_args, short_opts="", long_opts=[], gnu=True):
             opt_list_commits = True
         elif opt in ("-o", "--onto"):
             opt_onto = arg
+        elif opt in ("-O", "--override-to"):
+            opt_override_to = arg
         elif opt in ("-r", "--root"):
             opt_roots = set(arg.split(","))
         elif opt in ("-s", "--stat"):
@@ -1633,6 +1655,7 @@ try:
     opt_fork_point = None
     opt_list_commits = False
     opt_onto = None
+    opt_override_to = None
     opt_roots = set()
     opt_stat = False
     opt_verbose = False
@@ -1701,9 +1724,12 @@ try:
         # No need to read definition file.
         print definition_file
     elif cmd == "fork-point":
-        param = check_optional_param(parse_options(args))
+        param = check_optional_param(parse_options(args, "O:", ["override-to="]))
         # No need to read definition file.
-        print fork_point(param or current_branch())
+        if opt_override_to:
+            set_fork_point_override(param or current_branch(), opt_override_to)
+        else:
+            print fork_point(param or current_branch())
     elif cmd == "format":
         # No need to read definition file.
         usage("format")
