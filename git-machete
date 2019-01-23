@@ -1153,86 +1153,74 @@ def status():
     for u in roots:
         prefix_dfs(u, prefix=[])
 
-    needs_sync_with_up_branch = {}
-    remote_sync_status = {}
-    commits_cached = {}
-    fork_points_cached = {}
-    short_fork_point_sha = {}
-    edge_colors_cached = {}
-
     out = StringIO.StringIO()
+    edge_color = {}
+    fp_sha_cached = {}
+    fp_branches_cached = {}
 
-    for b, pfx in dfs_res:
-        remote_sync_status[b] = get_remote_sync_status(b)
-
-        if b in up_branch:
-            u = up_branch[b]
-            needs_sync_with_up_branch[b] = not is_ancestor(u, b)
-
-            # Force computing all needed fork points and edge colors to avoid later polluting the printed status in case of --verbose mode.
+    def fp_sha(b):
+        if b not in fp_sha_cached:
             try:
-                fp_sha, fp_branches = fork_point_and_containing_branch_defs(b)
+                fp_sha_cached[b], fp_branches_cached[b] = fork_point_and_containing_branch_defs(b)
             except MacheteException:
-                fp_sha, fp_branches = None, []
-            fork_points_cached[b] = (fp_sha, fp_branches)
+                fp_sha_cached[b], fp_branches_cached[b] = None, []
+        return fp_sha_cached[b]
 
-            if needs_sync_with_up_branch[b]:
-                edge_colors_cached[b] = RED
-                if opt_list_commits:
-                    commits_cached[b] = reversed(commits_between(fp_sha, "refs/heads/" + b)) if fp_sha else []
-            else:
-                if get_overridden_fork_point(b) or sha_by_revision(u) == fp_sha:
-                    edge_colors_cached[b] = GREEN
-                    if opt_list_commits:
-                        commits_cached[b] = reversed(commits_between(fp_sha, "refs/heads/" + b))
-                else:
-                    edge_colors_cached[b] = YELLOW
-                    if opt_list_commits:
-                        commits_cached[b] = reversed(commits_between("refs/heads/" + u, "refs/heads/" + b))
-                        short_fork_point_sha[b] = short_sha(fp_sha) if fp_sha else ''
+    # Edge colors need to be precomputed in order to render the leading parts of lines properly.
+    for b in up_branch:
+        u = up_branch[b]
+        if not is_ancestor(u, b):
+            edge_color[b] = RED
+        elif get_overridden_fork_point(b) or sha_by_revision(u) == fp_sha(b):
+            edge_color[b] = GREEN
+        else:
+            edge_color[b] = YELLOW
 
-    hook_output = {}
+    cb = current_branch_or_none()
+
     hook_path = get_hook_path("machete-status-branch")
-    if check_hook_executable(hook_path):
-        for b, pfx in dfs_res:
-            debug("status()", "running machete-status-branch hook (%s) for branch %s" % (hook_path, b))
-            status, stdout = popen_cmd(hook_path, b, cwd=get_root_dir())
-            if status == 0 and not stdout.isspace():
-                hook_output[b] = "  " + stdout.rstrip()
+    hook_executable = check_hook_executable(hook_path)
 
-    def print_line_prefix(b, suffix):
+    def print_line_prefix(b_, suffix):
         out.write("  ")
         for p in pfx[:-1]:
             if not p:
                 out.write("  ")
             else:
-                out.write(edge_colors_cached[p] + "│ " + ENDC)
-        out.write(edge_colors_cached[b] + suffix + ENDC)
-
-    cb = current_branch_or_none()
+                out.write(edge_color[p] + "│ " + ENDC)
+        out.write(edge_color[b_] + suffix + ENDC)
 
     for b, pfx in dfs_res:
-        current = underline(bold(b)) if b == cb else bold(b)
-        anno = "  " + dim(annotations[b]) if b in annotations else ""
-
         if b in up_branch:
             print_line_prefix(b, "│ \n")
             if opt_list_commits:
-                for sha, msg in commits_cached[b]:
-                    fp_sha, fp_branches = fork_points_cached[b]
-                    if sha == fp_sha:
-                        fp_branches_formatted = " and ".join(map(lambda (lb, lb_or_rb): lb_or_rb, fp_branches))
-                        fp_suffix = (RED + ' > fork point ???' + ENDC + ' commit ' + short_fork_point_sha[b] + ' found in reflog of ' + fp_branches_formatted)
+                if edge_color[b] == RED:
+                    commits = commits_between(fp_sha(b), "refs/heads/" + b) if fp_sha(b) else []
+                elif edge_color[b] == YELLOW:
+                    commits = commits_between("refs/heads/" + up_branch[b], "refs/heads/" + b)
+                else: # edge_color == GREEN
+                    commits = commits_between(fp_sha(b), "refs/heads/" + b)
+
+                for sha, msg in reversed(commits):
+                    if sha == fp_sha(b):
+                        # fp_branches_cached will already be there thanks to the above call to 'fp_sha'.
+                        fp_branches_formatted = " and ".join(map(lambda (lb, lb_or_rb): lb_or_rb, fp_branches_cached[b]))
+                        fp_suffix = (RED + ' > fork point ???' + ENDC + ' commit ' + short_sha(fp_sha(b)) + ' found in reflog of ' + fp_branches_formatted)
                     else:
                         fp_suffix = ''
                     print_line_prefix(b, "│ " + ENDC + dim(msg) + fp_suffix + "\n")
             print_line_prefix(b, "└─")
         else:
             if b != dfs_res[0][0]:
-                print
+                out.write("\n")
             out.write("  ")
-        s, remote = remote_sync_status[b]
-        sync_status_string = {
+
+        current = underline(bold(b)) if b == cb else bold(b)
+
+        anno = "  " + dim(annotations[b]) if b in annotations else ""
+
+        s, remote = get_remote_sync_status(b)
+        sync_status = {
             NO_REMOTES: "",
             UNTRACKED: ORANGE + " (untracked)" + ENDC,
             UNTRACKED_ON: ORANGE + " (untracked on %s)" % remote + ENDC,
@@ -1240,10 +1228,18 @@ def status():
             BEHIND_REMOTE: RED + " (behind %s)" % remote + ENDC,
             AHEAD_OF_REMOTE: RED + " (ahead of %s)" % remote + ENDC,
             DIVERGED_FROM_REMOTE: RED + " (diverged from %s)" % remote + ENDC
-        }
-        out.write(current + anno + sync_status_string[s] + (hook_output.get(b) or "") + "\n")
+        }[s]
 
-    print out.getvalue()
+        hook_output = ""
+        if hook_executable:
+            debug("status()", "running machete-status-branch hook (%s) for branch %s" % (hook_path, b))
+            status_code, stdout = popen_cmd(hook_path, b, cwd=get_root_dir())
+            if status_code == 0 and not stdout.isspace():
+                hook_output = "  " + stdout.rstrip()
+
+        out.write(current + anno + sync_status + hook_output + "\n")
+
+    sys.stdout.write(out.getvalue())
     out.close()
 
 
