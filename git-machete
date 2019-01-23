@@ -6,6 +6,7 @@ import itertools
 import os
 import subprocess
 import sys
+import StringIO
 import textwrap
 
 VERSION = '2.9.0'
@@ -1140,8 +1141,6 @@ def traverse():
 
 
 def status():
-    global sha_by_revision_cached
-
     dfs_res = []
 
     def prefix_dfs(u, prefix):
@@ -1160,6 +1159,8 @@ def status():
     fork_points_cached = {}
     short_fork_point_sha = {}
     edge_colors_cached = {}
+
+    out = StringIO.StringIO()
 
     for b, pfx in dfs_res:
         remote_sync_status[b] = get_remote_sync_status(b)
@@ -1200,13 +1201,13 @@ def status():
                 hook_output[b] = "  " + stdout.rstrip()
 
     def print_line_prefix(b, suffix):
-        sys.stdout.write("  ")
+        out.write("  ")
         for p in pfx[:-1]:
             if not p:
-                sys.stdout.write("  ")
+                out.write("  ")
             else:
-                sys.stdout.write(edge_colors_cached[p] + "│ " + ENDC)
-        sys.stdout.write(edge_colors_cached[b] + suffix + ENDC)
+                out.write(edge_colors_cached[p] + "│ " + ENDC)
+        out.write(edge_colors_cached[b] + suffix + ENDC)
 
     cb = current_branch_or_none()
 
@@ -1229,7 +1230,7 @@ def status():
         else:
             if b != dfs_res[0][0]:
                 print
-            sys.stdout.write("  ")
+            out.write("  ")
         s, remote = remote_sync_status[b]
         sync_status_string = {
             NO_REMOTES: "",
@@ -1240,7 +1241,10 @@ def status():
             AHEAD_OF_REMOTE: RED + " (ahead of %s)" % remote + ENDC,
             DIVERGED_FROM_REMOTE: RED + " (diverged from %s)" % remote + ENDC
         }
-        print current + anno + sync_status_string[s] + (hook_output.get(b) or "")
+        out.write(current + anno + sync_status_string[s] + (hook_output.get(b) or "") + "\n")
+
+    print out.getvalue()
+    out.close()
 
 
 # Main
