@@ -8,7 +8,7 @@ import subprocess
 import sys
 import textwrap
 
-VERSION = '2.8.5'
+VERSION = '2.9.0'
 
 
 # Core utils
@@ -527,15 +527,18 @@ def go(branch):
     run_git("checkout", "--quiet", branch, "--")
 
 
-def check_hook_executable(file_name):
-    hook_path = get_git_dir() + "/hooks/" + file_name
+def get_hook_path(hook_name):
+    return (get_config("core.hooksPath") or (get_git_dir() + "/hooks")) + "/" + hook_name
+
+
+def check_hook_executable(hook_path):
     if not os.path.exists(hook_path):
         return False
     elif not is_executable(hook_path):
         advice_ignored_hook = get_config("advice.ignoredHook")
         if advice_ignored_hook != 'false':  # both empty and "true" is okay
-            # The [33m color must be used to keep consistent with how git colors this advice for its native hooks.
-            print >> sys.stderr, YELLOW + "hint: The '.git/hooks/%s' hook was ignored because it's not set as executable." % file_name + ENDC
+            # The [33m color must be used to keep consistent with how git colors this advice for its built-in hooks.
+            print >> sys.stderr, YELLOW + "hint: The '%s' hook was ignored because it's not set as executable." % hook_path + ENDC
             print >> sys.stderr, YELLOW + "hint: You can disable this warning with `git config advice.ignoredHook false`." + ENDC
         return False
     else:
@@ -546,9 +549,8 @@ def rebase(onto, fork_commit, branch):
     def do_rebase():
         run_git("rebase", "--interactive", "--onto", onto, fork_commit, branch)
 
-    hook = "machete-pre-rebase"
-    if check_hook_executable(hook):
-        hook_path = get_git_dir() + "/hooks/" + hook
+    hook_path = get_hook_path("machete-pre-rebase")
+    if check_hook_executable(hook_path):
         debug("rebase(%s, %s, %s)" % (onto, fork_commit, branch), "running machete-pre-rebase hook (%s)" % hook_path)
         status = run_cmd(hook_path, onto, fork_commit, branch, cwd=get_root_dir())
         if status == 0:
@@ -1085,9 +1087,8 @@ def status():
         remote_sync_status[b] = get_remote_sync_status(b)
 
     hook_output = {}
-    hook = "machete-status-branch"
-    if check_hook_executable(hook):
-        hook_path = get_git_dir() + "/hooks/" + hook
+    hook_path = get_hook_path("machete-status-branch")
+    if check_hook_executable(hook_path):
         for b, pfx in dfs_res:
             debug("status()", "running machete-status-branch hook (%s) for branch %s" % (hook_path, b))
             status, stdout = popen_cmd(hook_path, b, cwd=get_root_dir())
@@ -1145,16 +1146,16 @@ def usage(c=None):
         "diff": "Diff current working directory or a given branch against its computed fork point",
         "discover": "Automatically discover tree of branch dependencies",
         "edit": "Edit the definition file",
-        "file": "Print path of the definition file",
+        "file": "Display the location of the definition file",
         "fork-point": "Display SHA of the computed fork point commit of a branch",
         "format": "Display docs for the format of the definition file",
         "go": "Check out the branch relative to the position of the current branch, accepts down/first/last/next/root/prev/up argument",
-        "help": "Print this overview, or print detailed help for a specified command",
+        "help": "Display this overview, or detailed help for a specified command",
         "hooks": "Display docs for the extra hooks added by git machete",
         "list": "List all branches that fall into one of pre-defined categories (mostly for internal use)",
         "log": "Log the part of history specific to the given branch",
         "reapply": "Rebase the current branch onto its computed fork point",
-        "show": "Display name(s) of the branch(es) relative to the position of the current branch, accepts down/first/last/next/root/prev/up argument",
+        "show": "Show name(s) of the branch(es) relative to the position of the current branch, accepts down/first/last/next/root/prev/up argument",
         "slide-out": "Slide the current branch out and rebase its downstream (child) branch onto its upstream (parent) branch",
         "status": "Display formatted tree of branch dependencies, including info on their sync with upstream branch and with remote",
         "traverse": "Walk through the tree of branch dependencies and ask to rebase, slide out, push and/or pull branches, one by one",
@@ -1229,7 +1230,8 @@ def usage(c=None):
         "file": """
             Usage: git machete file
 
-            Outputs the path of the machete definition file (currently fixed to <repo-root>/.git/machete).
+            Outputs the path of the machete definition file. Currently fixed to '<git-directory>/machete'.
+            Note: this won't always be just '.git/machete' since e.g. submodules have their git directory in different location by default.
         """,
         "fork-point": """
             Usage: git machete fork-point [<branch>]
@@ -1297,13 +1299,26 @@ def usage(c=None):
             Prints a summary of this tool, or a detailed info on a command if defined.
         """,
         "hooks": """
-            .git/hooks/machete-status-branch <branch-name>
-                TODO
+            As for standard git hooks, the hooks are expected in $GIT_DIR/hooks/* (or `git config core.hooksPath`/*, if set).
 
-            .git/hooks/machete-pre-rebase <new-base> <fork-point-hash> <branch-being-rebased>
-                TODO
+            Note: 'hooks' is not a standalone command, just a help topic (there is no 'git machete hooks' command).
 
-            Note: that's not a standalone command, just a help topic (there is no 'git machete hooks') command.
+            * machete-pre-rebase <new-base> <fork-point-hash> <branch-being-rebased>
+                The hook that is executed before rebase is run during 'reapply', 'slide-out', 'traverse' and 'update'.
+                The parameters are exactly the three revisions that are passed to 'git rebase --onto':
+                1. what is going to be the new base for the rebased commits,
+                2. what is the fork point - the place where the rebased history diverges from the upstream history,
+                3. what branch is rebased.
+                If the hook returns a non-zero status, the entire command is aborted.
+
+                Note: this hook is independent from git's standard 'pre-rebase' hook.
+                If machete-pre-rebase returns zero, the execution flow continues to 'git rebase', which will run 'pre-rebase' hook if present.
+                'machete-pre-rebase' is thus always run before 'pre-rebase'.
+
+            * machete-status-branch <branch-name>
+                The hook that is executed for each branch displayed during 'discover', 'status' and 'traverse'.
+                The standard output of this hook is displayed at the end of the line, after branch name, (optionally) custom annotation and (optionally) remote sync-ness status.
+                Standard error is ignored. If the hook returns a non-zero status, both stdout and stderr are ignored, and printing the status continues as usual.
         """,
         "list": """
             Usage: git machete list <category>
@@ -1404,8 +1419,9 @@ def usage(c=None):
               - red edge means that the downstream branch commit is NOT a direct descendant of the upstream branch commit (basically, the downstream branch is out of sync with its upstream branch),
               - yellow means that the opposite holds true, i.e. the downstream branch is in sync with its upstream branch, but the fork point of the downstream branch is a different commit than upstream branch tip,
               - green means that downstream branch is in sync with its upstream branch (so just like for yellow edge) and the fork point of downstream branch is EQUAL to the upstream branch tip.
-            * displays the custom annotations (see help on 'format') next to each branch, if present;
-            * optionally lists commits introduced on each branch if '--list-commits' is supplied.
+            * displays the custom annotations (see help on 'format' and 'anno') next to each branch, if present;
+            * displays the output of 'machete-status-branch' hook (see help on 'hooks'), if present;
+            * optionally lists commits introduced on each branch if '-l'/'--list-commits' is supplied.
 
             Note: in practice, both yellow and red edges suggest that the downstream branch should be updated against its upstream.
             Yellow typically indicates that there are/were commits from some other branches on the path between upstream and downstream and that a closer look at the log of the downstream branch might be necessary.
@@ -1491,7 +1507,7 @@ def usage(c=None):
 
 
 def short_usage():
-    print "Usage: git machete [--debug] [-h|--help] [-v|--verbose] [--version] <command> [command-specific options] [command-specific argument]"
+    print "Usage: git machete [--debug] [-h] [-v|--verbose] [--version] <command> [command-specific options] [command-specific argument]"
 
 
 def version():
